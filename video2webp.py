@@ -2,11 +2,12 @@ import sys
 import os
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QSlider, QLabel, QLineEdit, QFileDialog, QMessageBox
+    QPushButton, QSlider, QLabel, QLineEdit, QFileDialog, QMessageBox,
+    QSizePolicy
 )
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, QSettings
 import cv2
 from PIL import Image
 
@@ -14,12 +15,17 @@ class VideoPlayerWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("视频播放与WebP转换器")
-        self.setGeometry(100, 100, 800, 600)
+        self.setGeometry(100, 100, 900, 700)
+
+        # 用于存储上次路径的QSettings对象
+        self.settings = QSettings("YourCompany", "VideoToWebP")
 
         # 中心部件和布局
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(10)
 
         # 文件选择区域
         file_layout = QHBoxLayout()
@@ -28,11 +34,14 @@ class VideoPlayerWindow(QMainWindow):
         self.file_label = QLabel("未选择文件")
         file_layout.addWidget(self.open_btn)
         file_layout.addWidget(self.file_label)
+        file_layout.addStretch()
         main_layout.addLayout(file_layout)
 
-        # 视频播放控件
+        # 视频播放控件（设置拉伸策略，使其占据尽可能多的空间）
         self.video_widget = QVideoWidget()
-        main_layout.addWidget(self.video_widget)
+        self.video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.video_widget.setMinimumSize(320, 240)  # 设置最小尺寸
+        main_layout.addWidget(self.video_widget, stretch=1)
 
         # 媒体播放器和音频输出
         self.media_player = QMediaPlayer()
@@ -56,11 +65,12 @@ class VideoPlayerWindow(QMainWindow):
         convert_layout = QHBoxLayout()
         convert_layout.addWidget(QLabel("动图秒数:"))
         self.duration_input = QLineEdit()
-        self.duration_input.setPlaceholderText("例如: 3.5")
+        self.duration_input.setText("5")  # 默认5秒
         convert_layout.addWidget(self.duration_input)
         self.convert_btn = QPushButton("转换为WebP")
         self.convert_btn.clicked.connect(self.convert_to_webp)
         convert_layout.addWidget(self.convert_btn)
+        convert_layout.addStretch()
         main_layout.addLayout(convert_layout)
 
         # 连接媒体播放器的信号
@@ -71,14 +81,20 @@ class VideoPlayerWindow(QMainWindow):
         self.video_path = ""
 
     def open_file(self):
+        # 从设置中读取上次路径，如果没有则使用默认路径
+        last_dir = self.settings.value("last_dir", "")
         file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择视频文件", "", "视频文件 (*.mp4 *.avi *.mov *.mkv);;所有文件 (*)"
+            self, "选择视频文件", last_dir, "视频文件 (*.mp4 *.avi *.mov *.mkv);;所有文件 (*)"
         )
         if file_path:
             self.video_path = file_path
             self.file_label.setText(os.path.basename(file_path))
             self.media_player.setSource(QUrl.fromLocalFile(file_path))
             self.play_pause_btn.setText("播放")
+
+            # 保存当前目录到设置中
+            current_dir = os.path.dirname(file_path)
+            self.settings.setValue("last_dir", current_dir)
 
     def toggle_play_pause(self):
         if self.media_player.playbackState() == QMediaPlayer.PlayingState:
@@ -110,6 +126,11 @@ class VideoPlayerWindow(QMainWindow):
         return f"{to_mmss(ms)} / {to_mmss(total_ms)}"
 
     def convert_to_webp(self):
+        # 转换前暂停视频
+        if self.media_player.playbackState() == QMediaPlayer.PlayingState:
+            self.media_player.pause()
+            self.play_pause_btn.setText("播放")
+
         # 检查视频是否加载
         if not self.video_path or not os.path.exists(self.video_path):
             QMessageBox.warning(self, "警告", "请先打开一个视频文件")
@@ -141,12 +162,16 @@ class VideoPlayerWindow(QMainWindow):
                 QMessageBox.warning(self, "警告", "当前播放位置已到视频末尾，无法截取")
                 return
 
-        # 选择输出文件
+        # 选择输出文件（也使用上次保存的目录）
+        last_save_dir = self.settings.value("last_save_dir", "")
         output_path, _ = QFileDialog.getSaveFileName(
-            self, "保存WebP动图", "", "WebP图像 (*.webp)"
+            self, "保存WebP动图", last_save_dir, "WebP图像 (*.webp)"
         )
         if not output_path:
             return
+
+        # 保存输出目录
+        self.settings.setValue("last_save_dir", os.path.dirname(output_path))
 
         # 执行转换
         try:
