@@ -180,7 +180,7 @@ class VideoPlayerWindow(QMainWindow):
         # 速度选择
         control_layout.addWidget(QLabel("速度:"))
         self.speed_combo = QComboBox()
-        self.speed_combo.addItems(["1x", "2x", "4x", "8x"])
+        self.speed_combo.addItems(["1x", "2x", "4x", "8x", "16x", "32x"])
         self.speed_combo.currentTextChanged.connect(self.change_speed)
         control_layout.addWidget(self.speed_combo)
 
