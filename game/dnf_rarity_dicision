@@ -1,251 +1,257 @@
 import sys
+import re
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QLabel, QDoubleSpinBox,
-    QPushButton, QLineEdit, QVBoxLayout, QHBoxLayout,
-    QMessageBox, QTabWidget, QPlainTextEdit, QTableWidget,
-    QTableWidgetItem, QHeaderView
+    QApplication, QMainWindow, QTabWidget, QWidget, QVBoxLayout, QHBoxLayout,
+    QFormLayout, QDoubleSpinBox, QLabel, QPushButton, QTextEdit, QPlainTextEdit,
+    QMessageBox
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QClipboard
 
-
-class DropRateTool(QWidget):
+class DropRateTool(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("爆率工具 - 生成与分析")
-        self.resize(680, 520)
+        self.setWindowTitle("掉落爆率配置工具")
+        self.resize(650, 500)
 
-        main_layout = QVBoxLayout()
         self.tabs = QTabWidget()
-        main_layout.addWidget(self.tabs)
+        self.setCentralWidget(self.tabs)
 
-        self.create_generate_tab()
-        self.create_analyze_tab()
-        self.setLayout(main_layout)
+        self.generator_tab = GeneratorTab()
+        self.analyzer_tab = AnalyzerTab()
 
-    # ==================== 生成数组 ====================
-    def create_generate_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout()
-        layout.setSpacing(10)
+        self.tabs.addTab(self.generator_tab, "生成爆率数据")
+        self.tabs.addTab(self.analyzer_tab, "分析已有数据")
 
-        self.rarities = ["白", "蓝", "紫", "粉", "黄"]
-        self.spin_boxes = []
+class GeneratorTab(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
 
-        input_layout = QVBoxLayout()
-        input_layout.setSpacing(5)
-        for name in self.rarities:
-            h_layout = QHBoxLayout()
-            label = QLabel(f"{name}装爆率 (%):")
-            label.setFixedWidth(100)
-            spin = QDoubleSpinBox()
-            spin.setRange(0.0, 100.0)
-            spin.setDecimals(4)
-            spin.setSuffix(" %")
-            spin.setValue(0.0)
-            spin.valueChanged.connect(self.update_total_display)
-            h_layout.addWidget(label)
-            h_layout.addWidget(spin)
-            self.spin_boxes.append(spin)
-            input_layout.addLayout(h_layout)
-        layout.addLayout(input_layout)
+    def init_ui(self):
+        layout = QVBoxLayout(self)
 
-        self.total_label = QLabel("当前总爆率：0.0000%")
-        self.total_label.setStyleSheet("font-weight: bold; color: red;")
-        layout.addWidget(self.total_label)
+        # 输入区域
+        form_layout = QFormLayout()
+        self.spin_white = QDoubleSpinBox()
+        self.spin_white.setRange(0.0, 100.0)
+        self.spin_white.setDecimals(2)
+        self.spin_white.setSuffix("%")
+        self.spin_white.setValue(42.0)
 
-        self.btn_generate = QPushButton("生成数组")
-        self.btn_generate.clicked.connect(self.generate_array)
+        self.spin_blue = QDoubleSpinBox()
+        self.spin_blue.setRange(0.0, 100.0)
+        self.spin_blue.setDecimals(2)
+        self.spin_blue.setSuffix("%")
+        self.spin_blue.setValue(32.0)
+
+        self.spin_purple = QDoubleSpinBox()
+        self.spin_purple.setRange(0.0, 100.0)
+        self.spin_purple.setDecimals(2)
+        self.spin_purple.setSuffix("%")
+        self.spin_purple.setValue(21.0)
+
+        self.spin_pink = QDoubleSpinBox()
+        self.spin_pink.setRange(0.0, 100.0)
+        self.spin_pink.setDecimals(2)
+        self.spin_pink.setSuffix("%")
+        self.spin_pink.setValue(2.5)
+
+        self.spin_yellow = QDoubleSpinBox()
+        self.spin_yellow.setRange(0.0, 100.0)
+        self.spin_yellow.setDecimals(2)
+        self.spin_yellow.setSuffix("%")
+        self.spin_yellow.setValue(2.5)
+
+        form_layout.addRow("白色爆率", self.spin_white)
+        form_layout.addRow("蓝色爆率", self.spin_blue)
+        form_layout.addRow("紫色爆率", self.spin_purple)
+        form_layout.addRow("粉色爆率", self.spin_pink)
+        form_layout.addRow("黄色爆率", self.spin_yellow)
+
+        layout.addLayout(form_layout)
+
+        # 总和显示
+        sum_layout = QHBoxLayout()
+        self.sum_label = QLabel("总和: 100.00%")
+        self.sum_label.setStyleSheet("font-weight: bold; color: green;")
+        sum_layout.addWidget(self.sum_label)
+        sum_layout.addStretch()
+        layout.addLayout(sum_layout)
+
+        # 生成按钮
+        self.btn_generate = QPushButton("生成爆率数组")
+        self.btn_generate.clicked.connect(self.generate)
         layout.addWidget(self.btn_generate)
 
-        self.result_edit = QLineEdit()
-        self.result_edit.setReadOnly(True)
-        self.result_edit.setPlaceholderText("生成的数组将显示在这里...")
-        layout.addWidget(self.result_edit)
+        # 输出显示
+        self.output_text = QTextEdit()
+        self.output_text.setReadOnly(True)
+        layout.addWidget(self.output_text)
 
+        # 复制按钮
         self.btn_copy = QPushButton("复制到剪贴板")
         self.btn_copy.clicked.connect(self.copy_to_clipboard)
         layout.addWidget(self.btn_copy)
 
-        tab.setLayout(layout)
-        self.tabs.addTab(tab, "生成数组")
+        # 连接信号，实时更新总和
+        self.spin_white.valueChanged.connect(self.update_sum)
+        self.spin_blue.valueChanged.connect(self.update_sum)
+        self.spin_purple.valueChanged.connect(self.update_sum)
+        self.spin_pink.valueChanged.connect(self.update_sum)
+        self.spin_yellow.valueChanged.connect(self.update_sum)
 
-    def update_total_display(self):
-        percentages = [spin.value() for spin in self.spin_boxes]
-        total = sum(percentages)
-        self.total_label.setText(f"当前总爆率：{total:.4f}%")
-        if abs(total - 100.0) > 0.0001:
-            self.total_label.setStyleSheet("font-weight: bold; color: red;")
+        self.update_sum()
+
+    def update_sum(self):
+        total = (self.spin_white.value() + self.spin_blue.value() +
+                 self.spin_purple.value() + self.spin_pink.value() +
+                 self.spin_yellow.value())
+        self.sum_label.setText(f"总和: {total:.2f}%")
+        if abs(total - 100.0) < 1e-6:
+            self.sum_label.setStyleSheet("font-weight: bold; color: green;")
+            self.btn_generate.setEnabled(True)
         else:
-            self.total_label.setStyleSheet("font-weight: bold; color: green;")
+            self.sum_label.setStyleSheet("font-weight: bold; color: red;")
+            self.btn_generate.setEnabled(False)
 
-    def generate_array(self):
-        percentages = [spin.value() for spin in self.spin_boxes]
-        total = sum(percentages)
-        if abs(total - 100.0) > 0.0001:
-            QMessageBox.warning(self, "爆率错误",
-                                f"各品级爆率总和必须为 100%，当前总和为 {total:.4f}%。")
-            return
+    def generate(self):
+        percentages = [
+            self.spin_white.value(),
+            self.spin_blue.value(),
+            self.spin_purple.value(),
+            self.spin_pink.value(),
+            self.spin_yellow.value()
+        ]
+        # 将百分比转换为宽度（四舍五入到整数）
+        widths = [round(p / 100.0 * 1_000_000) for p in percentages]
+        total_width = sum(widths)
 
-        # 转换为百万分整数
-        parts = [int(round(p * 10000)) for p in percentages]
-        if sum(parts) != 1_000_000:
-            QMessageBox.warning(self, "精度错误",
-                                "整数转换后总和不为 1,000,000，请调整小数位数。")
-            return
+        # 因为四舍五入可能导致总和不等于1000000，调整最后一个品级（黄色）
+        diff = 1_000_000 - total_width
+        if diff != 0:
+            # 调整黄色宽度
+            widths[-1] += diff
+            if widths[-1] < 0:
+                QMessageBox.warning(self, "精度错误", "由于四舍五入导致黄色概率为负，请调整输入精度。")
+                return
 
-        # 找到最后一个概率 >0 的品级索引
-        last_valid_idx = -1
-        for i in range(5):
-            if parts[i] > 0:
-                last_valid_idx = i
+        # 生成累积阈值
+        thresholds = []
+        cum = 0
+        for i, w in enumerate(widths):
+            cum += w
+            thresholds.append(cum)
+        # 添加哨兵值
+        thresholds.append(1_000_001)
 
-        if last_valid_idx == -1:
-            QMessageBox.warning(self, "错误", "至少需要设置一个品级的爆率大于 0。")
-            return
-
-        # 生成累积阈值（前5个）
-        cumulative = 0
-        values = []
-        for i in range(5):
-            if i <= last_valid_idx:
-                cumulative += parts[i]
-                values.append(cumulative)
-            else:
-                values.append(0)  # 无效品级置 0
-
-        # 生成哨兵（第6个值）
-        if last_valid_idx == 4:  # 有黄色
-            sentinel = cumulative + 1  # 通常为 1000001
-        else:
-            sentinel = 0
-        values.append(sentinel)
-
-        # 格式：以制表符开头，每个数字间隔
-        array_str = "\t" + "\t".join(str(v) for v in values)
-        self.result_edit.setText(array_str)
+        # 格式化输出字符串：每个数字前加制表符，数字间也用制表符分隔
+        output_str = "\t" + "\t".join(str(t) for t in thresholds)
+        self.output_text.setPlainText(output_str)
 
     def copy_to_clipboard(self):
-        text = self.result_edit.text()
-        if not text:
-            QMessageBox.information(self, "提示", "请先生成数组。")
-            return
-        QApplication.clipboard().setText(text)
-        QMessageBox.information(self, "成功", "数组已复制到剪贴板。")
+        text = self.output_text.toPlainText()
+        if text:
+            QApplication.clipboard().setText(text)
+            QMessageBox.information(self, "已复制", "爆率数组已复制到剪贴板。")
+        else:
+            QMessageBox.warning(self, "无内容", "请先生成数据。")
 
-    # ==================== 分析数组 ====================
-    def create_analyze_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout()
 
-        layout.addWidget(QLabel("请将一组或多组数组粘贴到下方（每组为6个用制表符分隔的数字，每行一组）:"))
+class AnalyzerTab(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.init_ui()
 
-        self.analyze_input = QPlainTextEdit()
-        self.analyze_input.setPlaceholderText(
-            "示例：\n"
-            "800000\t989900\t999900\t0\t0\t0\n"
-            "330000\t750000\t950000\t980000\t1000000\t1000001"
-        )
-        layout.addWidget(self.analyze_input)
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+
+        label = QLabel("粘贴爆率数据（每组6个数字，可用制表符/空格/换行分隔）：")
+        layout.addWidget(label)
+
+        self.input_text = QPlainTextEdit()
+        layout.addWidget(self.input_text)
 
         self.btn_analyze = QPushButton("分析爆率")
-        self.btn_analyze.clicked.connect(self.analyze_arrays)
+        self.btn_analyze.clicked.connect(self.analyze)
         layout.addWidget(self.btn_analyze)
 
-        self.table = QTableWidget()
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(["行号", "白(%)", "蓝(%)", "紫(%)", "粉(%)", "黄(%)", "总和(%)"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        layout.addWidget(self.table)
+        self.result_text = QTextEdit()
+        self.result_text.setReadOnly(True)
+        layout.addWidget(self.result_text)
 
-        btn_clear = QPushButton("清空输入")
-        btn_clear.clicked.connect(lambda: self.analyze_input.clear())
-        layout.addWidget(btn_clear)
-
-        tab.setLayout(layout)
-        self.tabs.addTab(tab, "分析数组")
-
-    def analyze_arrays(self):
-        text = self.analyze_input.toPlainText().strip()
-        if not text:
-            QMessageBox.information(self, "提示", "请先粘贴数据。")
+    def analyze(self):
+        raw_text = self.input_text.toPlainText()
+        if not raw_text.strip():
+            self.result_text.setPlainText("请先粘贴数据。")
             return
 
-        lines = text.splitlines()
-        self.table.setRowCount(0)
+        # 分割出所有数字（支持制表符、空格、换行等空白字符）
+        tokens = re.split(r'\s+', raw_text.strip())
+        numbers = []
+        for t in tokens:
+            try:
+                numbers.append(int(t))
+            except ValueError:
+                pass  # 忽略非数字内容
 
-        for line_idx, line in enumerate(lines):
-            line = line.strip()
-            if not line:
-                continue
-            if line.startswith('\t'):
-                line = line[1:]
+        if len(numbers) % 6 != 0:
+            QMessageBox.warning(self, "格式错误",
+                                f"检测到的数字总数不是6的倍数（共{len(numbers)}个），请检查每组是否恰好6个数字。")
+            return
 
-            parts = line.split('\t')
-            numbers = []
-            for p in parts:
-                p = p.strip()
-                if p:
-                    try:
-                        numbers.append(int(p))
-                    except ValueError:
-                        break
-            if len(numbers) != 6:
-                row = self.table.rowCount()
-                self.table.insertRow(row)
-                item = QTableWidgetItem(f"第{line_idx+1}行格式错误（需6个整数）")
-                item.setToolTip(line)
-                self.table.setSpan(row, 0, 1, 7)
-                self.table.setItem(row, 0, item)
+        groups = [numbers[i:i+6] for i in range(0, len(numbers), 6)]
+        results = []
+
+        for g_idx, group in enumerate(groups, 1):
+            # 检查阈值有效性
+            if len(group) != 6:
+                results.append(f"组 {g_idx}: 数字个数不为6，跳过。")
                 continue
 
-            a, b, c, d, e, sentinel = numbers
+            # 计算各品级概率
+            thresholds = group
+            prev = 0
+            probs = [0.0] * 5  # 白,蓝,紫,粉,黄
+            total_prob = 0.0
+            empty_prob = 0.0
+            valid = True
 
-            # 确定有效上限：取前5个中最后一个 >0 的值
-            base = 0
-            for val in (e, d, c, b, a):
-                if val > 0:
-                    base = val
+            for i in range(5):
+                raw_upper = thresholds[i]
+                # 有效上界：原值若大于1000000则视为1000000，若为0或小于等于prev则区间无效
+                if raw_upper <= 0:
+                    eff_upper = 0
+                else:
+                    eff_upper = min(raw_upper, 1_000_000)
+
+                if eff_upper > prev:
+                    prob = (eff_upper - prev) / 1_000_000.0
+                    probs[i] = prob
+                    total_prob += prob
+                    prev = eff_upper
+                else:
+                    # 后续品级概率均为0，剩余部分可能为空掉落
                     break
-            if base == 0:
-                row = self.table.rowCount()
-                self.table.insertRow(row)
-                item = QTableWidgetItem(f"第{line_idx+1}行无有效阈值")
-                self.table.setSpan(row, 0, 1, 7)
-                self.table.setItem(row, 0, item)
+
+            empty_prob = 1.0 - total_prob
+            if empty_prob < -1e-9:
+                # 总概率超过100%，数据异常
+                results.append(f"组 {g_idx}: 数据异常，总概率超过100%。")
                 continue
 
-            # 计算各品级概率（分母为有效上限）
-            def calc_rate(cur, prev):
-                return (cur - prev) / base * 100 if cur > 0 else 0.0
+            # 格式化输出
+            lines = [f"组 {g_idx}:"]
+            color_names = ["白色", "蓝色", "紫色", "粉色", "黄色"]
+            for i in range(5):
+                lines.append(f"  {color_names[i]}: {probs[i]*100:.4f}%")
+            if empty_prob > 1e-9:
+                lines.append(f"  空掉落: {empty_prob*100:.4f}%")
+            total_display = total_prob + empty_prob
+            lines.append(f"  总和: {total_display*100:.2f}%")
+            results.append("\n".join(lines))
 
-            white_rate = calc_rate(a, 0)
-            blue_rate = calc_rate(b, a)
-            purple_rate = calc_rate(c, b)
-            pink_rate = calc_rate(d, c)
-            yellow_rate = calc_rate(e, d)
-            total_rate = white_rate + blue_rate + purple_rate + pink_rate + yellow_rate
-
-            row = self.table.rowCount()
-            self.table.insertRow(row)
-            self.table.setItem(row, 0, QTableWidgetItem(str(line_idx + 1)))
-            self.table.setItem(row, 1, QTableWidgetItem(f"{white_rate:.4f}"))
-            self.table.setItem(row, 2, QTableWidgetItem(f"{blue_rate:.4f}"))
-            self.table.setItem(row, 3, QTableWidgetItem(f"{purple_rate:.4f}"))
-            self.table.setItem(row, 4, QTableWidgetItem(f"{pink_rate:.4f}"))
-            self.table.setItem(row, 5, QTableWidgetItem(f"{yellow_rate:.4f}"))
-
-            sum_item = QTableWidgetItem(f"{total_rate:.4f}")
-            if abs(total_rate - 100.0) > 0.01:
-                sum_item.setForeground(Qt.red)
-            else:
-                sum_item.setForeground(Qt.green)
-            self.table.setItem(row, 6, sum_item)
-
-            # 若哨兵值异常则提示
-            if e > 0 and sentinel != e + 1 and sentinel != 0:
-                tip = f"⚠️ 哨兵异常 (黄阈值:{e}, 哨兵:{sentinel})"
-                self.table.item(row, 0).setText(tip)
-                self.table.item(row, 0).setToolTip(line)
+        self.result_text.setPlainText("\n\n".join(results))
 
 
 if __name__ == "__main__":
