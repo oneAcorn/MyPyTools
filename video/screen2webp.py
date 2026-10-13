@@ -212,12 +212,13 @@ def default_output_dir() -> str:
 
 
 def unique_path(folder: str, prefix: str, suffix: str = ".webp") -> str:
-    base = os.path.join(folder, prefix or "output")
-    candidate = base + suffix
-    counter = 1
+    name = (prefix or "output").strip().rstrip("_- ")
+    base = os.path.join(folder, name or "output")
+    candidate = "%s_%d%s" % (base, 0, suffix)
+    counter = 0
     while os.path.exists(candidate):
-        candidate = f"{base}{counter}{suffix}"
         counter += 1
+        candidate = "%s_%d%s" % (base, counter, suffix)
     return candidate
 
 
