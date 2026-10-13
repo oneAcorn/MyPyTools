@@ -7,14 +7,20 @@
 import os
 import sys
 import time
+import ctypes
 import threading
+from ctypes import wintypes
 from datetime import datetime
 
 import mss
 from PIL import Image
 
-from PySide6.QtCore import Qt, QRect, QEvent, QThread, QTimer, Signal, QSettings
-from PySide6.QtGui import QGuiApplication, QColor, QCursor, QFont, QImage, QPainter, QPen, QPixmap, QScreen
+from PySide6.QtCore import (
+    Qt, QRect, QEvent, QThread, QTimer, QAbstractNativeEventFilter, Signal, QSettings
+)
+from PySide6.QtGui import (
+    QGuiApplication, QColor, QCursor, QFont, QImage, QKeySequence, QPainter, QPen, QPixmap, QScreen
+)
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QComboBox, QSpinBox, QDoubleSpinBox,
@@ -23,6 +29,150 @@ from PySide6.QtWidgets import (
 )
 
 MSSFactory = getattr(mss, "MSS", None) or mss.mss
+
+# ---------- 全局快捷键（Windows RegisterHotKey） ----------
+
+WM_HOTKEY = 0x0312
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
+MOD_NOREPEAT = 0x4000
+
+user32 = ctypes.WinDLL("user32", use_last_error=True) if sys.platform == "win32" else None
+if user32 is not None:
+    user32.RegisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_uint, ctypes.c_uint]
+    user32.RegisterHotKey.restype = ctypes.c_bool
+    user32.UnregisterHotKey.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    user32.UnregisterHotKey.restype = ctypes.c_bool
+
+DEFAULT_HOTKEY = "Alt+R"
+
+
+def parse_hotkey(text: str):
+    """把 'Ctrl+Shift+F5' 这类文本解析为 (修饰位, 虚拟键码)，无效返回 None"""
+    mods = 0
+    vk = 0
+    for part in (text or "").replace("-", "+").split("+"):
+        token = part.strip().upper()
+        if not token:
+            continue
+        if token in ("CTRL", "CONTROL"):
+            mods |= MOD_CONTROL
+        elif token in ("ALT", "MENU"):
+            mods |= MOD_ALT
+        elif token == "SHIFT":
+            mods |= MOD_SHIFT
+        elif token in ("WIN", "META", "SUPER"):
+            mods |= MOD_WIN
+        elif len(token) == 1 and ("A" <= token <= "Z"):
+            vk = ord(token)
+        elif len(token) == 1 and ("0" <= token <= "9"):
+            vk = ord(token)
+        elif len(token) > 1 and token[0] == "F" and token[1:].isdigit():
+            num = int(token[1:])
+            if 1 <= num <= 24:
+                vk = 0x70 + num - 1
+    if not mods or not vk:
+        return None
+    return mods, vk
+
+
+class GlobalHotkeyFilter(QAbstractNativeEventFilter):
+    """系统级快捷键：向 Windows 注册热键并接收 WM_HOTKEY 消息"""
+
+    HOTKEY_ID = 0xB1B1
+
+    def __init__(self):
+        super().__init__()
+        self.registered = False
+        self.sequence = ""
+        self.callback = None
+
+    def register(self, sequence: str) -> bool:
+        self.unregister()
+        self.sequence = sequence or ""
+        if user32 is None:
+            return False
+        parsed = parse_hotkey(sequence)
+        if parsed is None:
+            return False
+        mods, vk = parsed
+        self.registered = bool(user32.RegisterHotKey(
+            None, self.HOTKEY_ID, mods | MOD_NOREPEAT, vk))
+        return self.registered
+
+    def unregister(self):
+        if self.registered and user32 is not None:
+            user32.UnregisterHotKey(None, self.HOTKEY_ID)
+        self.registered = False
+
+    def nativeEventFilter(self, event_type, message):
+        if user32 is not None:
+            msg = wintypes.MSG.from_address(int(message))
+            if msg.message == WM_HOTKEY and msg.wParam == self.HOTKEY_ID:
+                if self.callback is not None:
+                    self.callback()
+                return True, 0
+        return False, 0
+
+
+class ShortcutEdit(QLineEdit):
+    """点击后按下组合键即可录入快捷键"""
+
+    shortcutCaptured = Signal(str)
+    shortcutCleared = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setAlignment(Qt.AlignCenter)
+        self.setPlaceholderText("点击后按下快捷键")
+        self.setFixedWidth(150)
+        self._capturing = False
+
+    def mousePressEvent(self, event):
+        self._capturing = True
+        self.setFocus(Qt.MouseFocusReason)
+        self.setText("请按键…（Backspace 清除）")
+
+    def focusOutEvent(self, event):
+        self._capturing = False
+        super().focusOutEvent(event)
+        if self.text().startswith("请按键"):
+            self.setText("")
+
+    def keyPressEvent(self, event):
+        if not self._capturing:
+            super().keyPressEvent(event)
+            return
+
+        if event.key() in (Qt.Key_Backspace, Qt.Key_Delete):
+            self._capturing = False
+            self.clear()
+            self.shortcutCleared.emit()
+            self.clearFocus()
+            return
+
+        modifiers = event.modifiers()
+        real_mods = modifiers & (Qt.ControlModifier | Qt.AltModifier
+                                 | Qt.ShiftModifier | Qt.MetaModifier)
+        if real_mods == Qt.NoModifier:
+            self.setText("需要包含 Ctrl / Alt / Shift / Win")
+            return
+        if event.key() in (Qt.Key_Control, Qt.Key_Alt, Qt.Key_Shift, Qt.Key_Meta):
+            return
+
+        sequence = QKeySequence(int(event.key()) | modifiers)
+        text = sequence.toString(QKeySequence.PortableText)
+        if not text or parse_hotkey(text) is None:
+            self.setText("该组合键暂不支持")
+            return
+
+        self._capturing = False
+        self.setText(text)
+        self.shortcutCaptured.emit(text)
+        self.clearFocus()
 
 
 # ---------- 基础工具 ----------
@@ -379,6 +529,7 @@ class ScreenRecorderWindow(QMainWindow):
         self.floating_bar = None
         self.region = {}
         self.region_name = ""
+        self._pending_record = None
 
         central = QWidget()
         self.setCentralWidget(central)
@@ -475,7 +626,7 @@ class ScreenRecorderWindow(QMainWindow):
         self.frame_ms_spin = QSpinBox()
         self.frame_ms_spin.setRange(20, 2000)
         self.frame_ms_spin.setSingleStep(20)
-        self.frame_ms_spin.setValue(100)
+        self.frame_ms_spin.setValue(50)
         self.frame_ms_spin.setSuffix(" ms")
         self.frame_ms_spin.valueChanged.connect(self._on_frame_ms_changed)
         row2.addWidget(self.frame_ms_spin)
@@ -510,8 +661,19 @@ class ScreenRecorderWindow(QMainWindow):
         layout.addLayout(row3)
 
         self.floating_check = QCheckBox("录制时显示悬浮控制条")
-        self.floating_check.setChecked(True)
+        self.floating_check.setChecked(False)
         layout.addWidget(self.floating_check)
+
+        row4 = QHBoxLayout()
+        row4.addWidget(QLabel("全局开始录制快捷键:"))
+        self.shortcut_edit = ShortcutEdit()
+        self.shortcut_edit.shortcutCaptured.connect(self._on_shortcut_captured)
+        self.shortcut_edit.shortcutCleared.connect(self._on_shortcut_cleared)
+        row4.addWidget(self.shortcut_edit)
+        self.hotkey_hint = QLabel("")
+        self.hotkey_hint.setStyleSheet("font-size: 12px; color: #444;")
+        row4.addWidget(self.hotkey_hint, 1)
+        layout.addLayout(row4)
         return group
 
     def _build_output_group(self) -> QGroupBox:
@@ -550,6 +712,36 @@ class ScreenRecorderWindow(QMainWindow):
         self.prefix_input.setText("screen_%s" % datetime.now().strftime("%Y%m%d_%H%M%S"))
         self._on_region_mode_changed(self.MODE_FULL)
         self._on_frame_ms_changed(self.frame_ms_spin.value())
+
+        self.hotkey = GlobalHotkeyFilter()
+        self.hotkey.callback = self._hotkey_triggered
+        QApplication.instance().installNativeEventFilter(self.hotkey)
+        shortcut = self.settings.value("hotkey", DEFAULT_HOTKEY) or ""
+        self.shortcut_edit.setText(shortcut)
+        self._apply_hotkey(shortcut)
+
+    # ---- 全局快捷键 ----
+
+    def _apply_hotkey(self, sequence: str):
+        ok = self.hotkey.register(sequence) if sequence else False
+        if not sequence:
+            self.hotkey_hint.setText("未启用")
+        elif ok:
+            self.hotkey_hint.setText(f"已生效：任意窗口按 {sequence} 直接开始录制")
+        else:
+            self.hotkey_hint.setText(f"{sequence} 注册失败，可能被其他软件占用")
+        self.record_btn.setToolTip(f"开始录制（快捷键 {sequence}）" if ok else "开始录制")
+
+    def _on_shortcut_captured(self, sequence: str):
+        self.settings.setValue("hotkey", sequence)
+        self._apply_hotkey(sequence)
+
+    def _on_shortcut_cleared(self):
+        self.settings.setValue("hotkey", "")
+        self._apply_hotkey("")
+
+    def _hotkey_triggered(self):
+        self.start_recording(countdown=False)
 
     def _current_region(self) -> dict:
         mode = self.region_combo.currentText()
@@ -645,7 +837,7 @@ class ScreenRecorderWindow(QMainWindow):
 
     # ---- 录制流程 ----
 
-    def start_recording(self):
+    def start_recording(self, countdown: bool = True):
         if self.recorder is not None:
             return
 
@@ -672,13 +864,18 @@ class ScreenRecorderWindow(QMainWindow):
         )
 
         self._set_controls_enabled(False)
-        self.countdown = CountdownWindow(3)
-        self.countdown.finished.connect(self._on_countdown_finished)
-        self.countdown.cancelled.connect(self._on_countdown_cancelled)
-        self.countdown.start_at_center()
+        if countdown:
+            self.countdown = CountdownWindow(3)
+            self.countdown.finished.connect(self._on_countdown_finished)
+            self.countdown.cancelled.connect(self._on_countdown_cancelled)
+            self.countdown.start_at_center()
+        else:
+            self._on_countdown_finished()
 
     def _on_countdown_finished(self):
-        self.countdown = None
+        if self.countdown is not None:
+            self.countdown.close()
+            self.countdown = None
         region, frame_ms, max_seconds, quality, scale, output_path = self._pending_record
 
         self.recorder = RecorderThread(
@@ -766,9 +963,12 @@ class ScreenRecorderWindow(QMainWindow):
         self.quality_slider.setEnabled(enabled)
         self.folder_btn.setEnabled(enabled)
         self.prefix_input.setEnabled(enabled)
+        self.shortcut_edit.setEnabled(enabled)
         self.progress_bar.setVisible(not enabled)
 
     def eventFilter(self, obj, event):
+        if obj is self.shortcut_edit and event.type() == QEvent.KeyPress:
+            return False
         if (event.type() == QEvent.KeyPress and event.key() == Qt.Key_Escape
                 and self.recorder is not None and self.recorder.isRunning()):
             self.stop_recording()
@@ -790,6 +990,7 @@ class ScreenRecorderWindow(QMainWindow):
             self.countdown.close()
         if self.floating_bar is not None:
             self.floating_bar.close()
+        self.hotkey.unregister()
         self.settings.setValue("output_dir", self.output_dir)
         event.accept()
 
